@@ -3,3 +3,6 @@ uvicorn[standard]
 python-dotenv
 langchain-google-genai
 langchain
+langchain-community
+pypdf
+tiktoken
