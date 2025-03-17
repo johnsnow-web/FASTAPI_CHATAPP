@@ -25,6 +25,3 @@ def initialize_pdfs():
     
     logging.info(f"✅ Processed {len(documents)} text chunks.")
     
-    # Store chunks into Pinecone
-    # store_embeddings(documents)
-    # logging.info("📦 Stored embeddings successfully.")
