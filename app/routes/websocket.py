@@ -10,6 +10,7 @@ from app.services.memory import get_chat_history  # Import the function to get c
 router = APIRouter()
 
 DEEPGRAM_TTS_URL = "https://api.deepgram.com/v1/speak"
+DEEPGRAM_STT_URL = "https://api.deepgram.com/v1/listen"
 
 async def generate_full_tts_audio(text):
     """
@@ -34,6 +35,25 @@ async def generate_full_tts_audio(text):
             return None
 
         return audio_data  # Return full audio data
+    
+async def transcribe_audio(audio_data):
+    """
+    Sends audio to Deepgram STT API and returns transcribed text.
+    """
+    headers = {
+        "Authorization": f"Token {DEEPGRAM_API_KEY}",
+        "Content-Type": "audio/wav"
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(DEEPGRAM_STT_URL, headers=headers, content=audio_data)
+
+        if response.status_code != 200:
+            logging.error(f"❌ Deepgram STT API Error: {response.text}")
+            return None
+        
+        transcript = response.json().get("results", {}).get("channels", [{}])[0].get("alternatives", [{}])[0].get("transcript", "")
+        return transcript.strip() if transcript else None
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
