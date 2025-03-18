@@ -14,13 +14,10 @@ document.addEventListener("DOMContentLoaded", function () {
             ws.onopen = () => console.log("✅ WebSocket Connected");
 
             ws.onmessage = async (event) => {
-                console.log("📩 Received:", event.data);
 
                 if (event.data instanceof Blob) {
-                    console.log("📦 Audio chunk received:", event.data);
                     playAudioStream(event.data);
                 } else if (typeof event.data === "string") {
-                    console.log("📩 Text received:", event.data);
                     addMessage(event.data); // Correctly pass string
                 } else {
                     console.error("Received unexpected data type:", typeof event.data);
@@ -69,7 +66,6 @@ document.addEventListener("DOMContentLoaded", function () {
     async function playAudioStream(audioBlob) {
         try {
             const arrayBuffer = await audioBlob.arrayBuffer();
-            console.log("Audio ArrayBuffer:", arrayBuffer);
             const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
 
             if (source) source.stop();
@@ -79,7 +75,6 @@ document.addEventListener("DOMContentLoaded", function () {
             source.connect(audioContext.destination);
             source.start(0);
 
-            console.log("🎶 Playing audio chunk...");
         } catch (error) {
             console.error("Error playing audio:", error);
         }
