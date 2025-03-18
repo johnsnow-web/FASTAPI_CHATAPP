@@ -1,78 +1,117 @@
 document.addEventListener("DOMContentLoaded", function () {
     const chatBox = document.getElementById("chat-box");
     const messageInput = document.getElementById("message");
-    const sendBtn = document.getElementById("sendBtn");
-    const startSpeakingBtn = document.getElementById("startSpeaking");
-    const endSpeakingBtn = document.getElementById("endSpeaking");
+    const startSpeaking = document.getElementById("startSpeaking");
+    const endSpeaking = document.getElementById("endSpeaking");
 
-    let recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
     let ws;
+    let recognition;
+    let silenceTimer;
+    let transcriptBuffer = "";
 
     function connectWebSocket() {
         if (!ws || ws.readyState === WebSocket.CLOSED) {
             ws = new WebSocket("ws://127.0.0.1:8000/ws");
 
-            ws.onopen = () => console.log("WebSocket Connected ✅");
-            ws.onmessage = (event) => addMessage("AI", event.data);
-            ws.onclose = () => console.log("WebSocket Disconnected ❌");
-            ws.onerror = (error) => console.error("WebSocket Error:", error);
+            ws.onopen = () => console.log("✅ WebSocket Connected");
+
+            ws.onmessage = async (event) => {
+                if (typeof event.data === "string") {
+                    addMessage("AI", event.data);
+                } else if (event.data instanceof Blob) {
+                    playAudioStream(event.data);
+                }
+            };
+
+            ws.onclose = () => {
+                console.warn("❌ WebSocket Disconnected. Reconnecting...");
+                setTimeout(connectWebSocket, 2000);
+            };
+
+            ws.onerror = (error) => console.error("❌ WebSocket Error:", error);
         }
     }
 
     connectWebSocket();
 
-    startSpeakingBtn.addEventListener("click", () => {
-        recognition.start();
-        startSpeakingBtn.style.background = "darkgreen";
-    });
-
-    endSpeakingBtn.addEventListener("click", () => {
-        recognition.stop();
-        startSpeakingBtn.style.background = "green";
-    });
-
-    recognition.onresult = (event) => {
-        messageInput.value = event.results[0][0].transcript;
-    };
-
-    sendBtn.addEventListener("click", () => {
-        const message = messageInput.value.trim();
-        if (message) {
-            addMessage("You", message);
-            messageInput.value = "";
-
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(message);
-            } else {
-                console.error("WebSocket Closed ❌ Reconnecting...");
-                connectWebSocket();
-                setTimeout(() => {
-                    if (ws.readyState === WebSocket.OPEN) {
-                        ws.send(message);
-                    }
-                }, 1000);
-            }
+    function startSpeechRecognition() {
+        if (!("webkitSpeechRecognition" in window)) {
+            alert("Your browser does not support speech recognition.");
+            return;
         }
-    });
+
+        recognition = new webkitSpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = "en-US";
+
+        recognition.onstart = () => console.log("🎙️ Speech recognition started...");
+        recognition.onerror = (event) => console.error("Speech recognition error:", event.error);
+
+        recognition.onresult = (event) => {
+            let finalText = "";
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                let transcript = event.results[i][0].transcript;
+                if (event.results[i].isFinal) {
+                    finalText += transcript + " ";
+                }
+            }
+
+            if (finalText.trim()) {
+                transcriptBuffer = finalText.trim();
+                addMessage("You", transcriptBuffer);
+            }
+
+            resetSilenceTimer();
+        };
+
+        recognition.start();
+    }
+
+    function resetSilenceTimer() {
+        if (silenceTimer) clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(() => {
+            if (transcriptBuffer.trim()) {
+                sendToBackend(transcriptBuffer);
+                transcriptBuffer = ""; 
+            }
+        }, 1000);
+    }
+
+    function sendToBackend(text) {
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(text);
+        } else {
+            console.error("WebSocket Closed ❌ Reconnecting...");
+            connectWebSocket();
+            setTimeout(() => {
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(text);
+                }
+            }, 1000);
+        }
+    }
 
     function addMessage(user, text) {
         let msgDiv = document.createElement("div");
         msgDiv.classList.add("message");
-    
-        // Properly format bullet points, bold text, and newlines
-        let formattedText = text
-            .replace(/\n/g, "<br>") // Convert newlines to <br>
-            .replace(/\*{2}(.*?)\*{2}/g, "<strong>$1</strong>") // Bold text (**text** → <strong>text</strong>)
-            .replace(/\* (.*?)(<br>|$)/g, "<li>$1</li>"); // Convert bullet points (* text) into <li>
-    
-        // Wrap bullet points inside <ul> if they exist
-        if (formattedText.includes("<li>")) {
-            formattedText = "<ul>" + formattedText + "</ul>";
-        }
-    
-        msgDiv.innerHTML = `<strong>${user}:</strong> ${formattedText}`;
+        msgDiv.innerHTML = `<strong>${user}:</strong> ${text}`;
         chatBox.appendChild(msgDiv);
         chatBox.scrollTop = chatBox.scrollHeight;
     }
-    
+
+    function playAudioStream(audioBlob) {
+        let audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        audioBlob.arrayBuffer().then((arrayBuffer) => {
+            audioContext.decodeAudioData(arrayBuffer, (audioBuffer) => {
+                let source = audioContext.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(audioContext.destination);
+                source.start();
+            });
+        });
+    }
+
+    startSpeaking.addEventListener("click", startSpeechRecognition);
+    endSpeaking.addEventListener("click", () => recognition && recognition.stop());
 });
