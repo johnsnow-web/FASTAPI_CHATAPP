@@ -18,9 +18,9 @@ def get_chat_history():
     
     for message in history_messages:
         if hasattr(message, "content"):
-            if message.type == "human":
+            if message.type == "user":
                 formatted_history.append(f"User: {message.content}")
-            elif message.type == "ai":
+            elif message.type == "u-care":
                 formatted_history.append(f"AI: {message.content}")
 
     return "\n".join(formatted_history) if formatted_history else "No previous conversation."
