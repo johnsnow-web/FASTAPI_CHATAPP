@@ -82,7 +82,6 @@ def generate_response(query, context_prompt=None):
         response_text = response.content.strip() if hasattr(response, "content") else str(response).strip()
 
         logging.info(f"✅ Response generated in {end_time - start_time:.2f} seconds.")
-        logging.info(f"🤖 AI Response: {response_text}")
 
         # save_chat_history(user_query=query, ai_response=response_text)
         
@@ -92,4 +91,3 @@ def generate_response(query, context_prompt=None):
     except Exception as e:
         logging.error(f"❌ Error generating response: {e}")
         return "I'm sorry, I couldn't process your request right now."
-

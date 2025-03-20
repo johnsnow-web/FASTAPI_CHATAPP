@@ -1,5 +1,4 @@
 # from langchain.memory import ConversationBufferMemory
-# import logging
 
 # # Shared memory instance
 # memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
@@ -7,7 +6,6 @@
 # def save_chat_history(user_query, ai_response):
 #     """Saves user query and AI response in memory."""
 #     memory.save_context({"input": user_query}, {"output": ai_response})
-#     logging.info(memory)
 
 # def get_chat_history():
 #     """Fetch stored chat history in a structured format."""

@@ -1,12 +1,6 @@
-import asyncio
-import json
 from app.config.settings import DEEPGRAM_API_KEY
-from fastapi import FastAPI, WebSocket
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import WebSocket
 from deepgram import DeepgramClient, DeepgramClientOptions, SpeakWebSocketEvents, SpeakWSOptions
-
-
-
 
 # Initialize Deepgram client
 config = DeepgramClientOptions(options={"speaker_playback": "true"})
