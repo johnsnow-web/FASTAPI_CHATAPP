@@ -1,10 +1,8 @@
 import logging
 import time
 from langchain_google_genai import GoogleGenerativeAI
-from app.services.memory import save_chat_history, get_chat_history
 from app.config.settings import GEMINI_API_KEY
-# Initialize logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# from app.services.memory import save_chat_history,get_chat_history
 
 
 # Initialize Gemini LLM with a more cost-effective model
@@ -39,18 +37,19 @@ def check_relevance(query, context):
         logging.error(f"❌ Error checking relevance: {e}")
         return False
 
-def generate_response(query, context_prompt=None, chat_history=None):
+def generate_response(query, context_prompt=None):
     """Generates a concise AI response for mental health support."""
-    if chat_history is None:
-        chat_history = "No previous conversation."
+    # chat_history = get_chat_history()
+    # logging.info("chat history : ", chat_history)
+    # if chat_history is None:
+    #     chat_history = "No previous conversation."
 
     base_prompt = f"""You are a supportive and concise mental health assistant.
     Understand the user's query and their emotional state.
-    **Crucially, use the previous conversation history to maintain context and personalize your responses.**
+    **Crucially, respond in manner where user voice assistant can understand and read properly eg. emotions, exclaimations etc. and do not use emojis**
     Respond in a helpful, empathetic, and brief manner, aiming to address the core of their issue without unnecessary length.
 
-    **Chat History:**
-    {chat_history}
+  
 
     **User Query:**
     {query}
@@ -84,29 +83,13 @@ def generate_response(query, context_prompt=None, chat_history=None):
 
         logging.info(f"✅ Response generated in {end_time - start_time:.2f} seconds.")
         logging.info(f"🤖 AI Response: {response_text}")
+
+        # save_chat_history(user_query=query, ai_response=response_text)
+        
+
         return response_text
 
     except Exception as e:
         logging.error(f"❌ Error generating response: {e}")
         return "I'm sorry, I couldn't process your request right now."
 
-def process_query(user_query, context_retriever):
-    """Processes the user query, retrieves context, generates response, and updates memory."""
-    logging.info(f"Received query: {user_query}")
-
-    # Get chat history
-    chat_history = get_chat_history()
-    logging.info(f"Current Chat History:\n{chat_history}")
-
-    # Retrieve context using the provided context_retriever function
-    retrieved_context = context_retriever(user_query)
-    logging.info(f"Retrieved Context: {retrieved_context}")
-
-    # Generate the AI response, now explicitly passing the chat history
-    ai_response = generate_response(user_query, context_prompt=retrieved_context, chat_history=chat_history)
-
-    # Save the interaction to memory
-    save_chat_history(user_query, ai_response)
-    logging.info("Chat history updated.")
-
-    return ai_response
