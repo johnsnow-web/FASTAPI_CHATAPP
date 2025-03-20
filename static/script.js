@@ -1,13 +1,12 @@
 document.addEventListener("DOMContentLoaded", function () {
     const chatBox = document.getElementById("chat-box");
-    const messageInput = document.getElementById("message");
     const startSpeaking = document.getElementById("startSpeaking");
     const endSpeaking = document.getElementById("endSpeaking");
 
     let ws;
-    let recognition;
-    let silenceTimer;
-    let transcriptBuffer = "";
+    let mediaRecorder;
+    let audioStream;
+    let isTranscriptionStarted = false;
 
     function connectWebSocket() {
         if (!ws || ws.readyState === WebSocket.CLOSED) {
@@ -15,11 +14,14 @@ document.addEventListener("DOMContentLoaded", function () {
 
             ws.onopen = () => console.log("✅ WebSocket Connected");
 
+            ws.binaryType = 'arraybuffer';
+
             ws.onmessage = async (event) => {
                 if (typeof event.data === "string") {
                     addMessage("AI", event.data);
                 } else if (event.data instanceof Blob) {
-                    playAudioStream(event.data);
+                    const arrayBuffer = await event.data.arrayBuffer();
+                    playAudioStream(arrayBuffer);
                 }
             };
 
@@ -34,61 +36,41 @@ document.addEventListener("DOMContentLoaded", function () {
 
     connectWebSocket();
 
-    function startSpeechRecognition() {
-        if (!("webkitSpeechRecognition" in window)) {
-            alert("Your browser does not support speech recognition.");
+    async function startRecording() {
+        if (isTranscriptionStarted) {
+            console.log("Cannot start recording while AI is responding.");
             return;
         }
 
-        recognition = new webkitSpeechRecognition();
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        recognition.lang = "en-US";
+        try {
+            audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            console.log("🎤 Microphone access granted.");
 
-        recognition.onstart = () => console.log("🎙️ Speech recognition started...");
-        recognition.onerror = (event) => console.error("Speech recognition error:", event.error);
+            mediaRecorder = new MediaRecorder(audioStream, { mimeType: "audio/webm" });
+            mediaRecorder.start(100); 
 
-        recognition.onresult = (event) => {
-            let finalText = "";
-            for (let i = event.resultIndex; i < event.results.length; i++) {
-                let transcript = event.results[i][0].transcript;
-                if (event.results[i].isFinal) {
-                    finalText += transcript + " ";
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
+                    event.data.arrayBuffer().then((buffer) => {
+                        const uint8Array = new Uint8Array(buffer);
+                        ws.send(uint8Array);
+                    });
                 }
-            }
+            };
 
-            if (finalText.trim()) {
-                transcriptBuffer = finalText.trim();
-                addMessage("You", transcriptBuffer);
-            }
-
-            resetSilenceTimer();
-        };
-
-        recognition.start();
+            console.log("🔴 Recording started...");
+        } catch (error) {
+            console.error("❌ Microphone access denied:", error);
+        }
     }
 
-    function resetSilenceTimer() {
-        if (silenceTimer) clearTimeout(silenceTimer);
-        silenceTimer = setTimeout(() => {
-            if (transcriptBuffer.trim()) {
-                sendToBackend(transcriptBuffer);
-                transcriptBuffer = ""; 
-            }
-        }, 1000);
-    }
-
-    function sendToBackend(text) {
-        if (ws.readyState === WebSocket.OPEN) {
-            ws.send(text);
-        } else {
-            console.error("WebSocket Closed ❌ Reconnecting...");
-            connectWebSocket();
-            setTimeout(() => {
-                if (ws.readyState === WebSocket.OPEN) {
-                    ws.send(text);
-                }
-            }, 1000);
+    function stopRecording() {
+        if (mediaRecorder && mediaRecorder.state !== "inactive") {
+            mediaRecorder.stop();
+            console.log("⏹️ Stopping recording...");
+        }
+        if (audioStream) {
+            audioStream.getTracks().forEach((track) => track.stop());
         }
     }
 
@@ -100,18 +82,22 @@ document.addEventListener("DOMContentLoaded", function () {
         chatBox.scrollTop = chatBox.scrollHeight;
     }
 
-    function playAudioStream(audioBlob) {
-        let audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        audioBlob.arrayBuffer().then((arrayBuffer) => {
-            audioContext.decodeAudioData(arrayBuffer, (audioBuffer) => {
-                let source = audioContext.createBufferSource();
-                source.buffer = audioBuffer;
-                source.connect(audioContext.destination);
-                source.start();
-            });
-        });
-    }
+     // Create a single AudioContext
+     let audioContext = new (window.AudioContext || window.webkitAudioContext)();
 
-    startSpeaking.addEventListener("click", startSpeechRecognition);
-    endSpeaking.addEventListener("click", () => recognition && recognition.stop());
-});
+     function playAudioStream(audioBlob) {
+         audioBlob.arrayBuffer()
+             .then((arrayBuffer) => audioContext.decodeAudioData(arrayBuffer))
+             .then((audioBuffer) => {
+                 let source = audioContext.createBufferSource();
+                 source.buffer = audioBuffer;
+                 source.connect(audioContext.destination);
+                 source.start();
+             })
+             .catch((error) => console.error("Error decoding audio data:", error));
+     }
+ 
+ 
+     startSpeaking.addEventListener("click", startRecording);
+     endSpeaking.addEventListener("click", stopRecording);
+ });

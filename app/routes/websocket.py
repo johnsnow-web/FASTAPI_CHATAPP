@@ -1,110 +1,110 @@
 import logging
 import asyncio
-import httpx
+import time
+import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from deepgram import DeepgramClient, LiveTranscriptionEvents, LiveOptions
 from app.services.ai import generate_response, check_relevance
+# from app.services.memory import get_chat_history
 from app.services.pinecone import search_pinecone
+from app.services.tts import generate_full_tts_audio
 from app.config.settings import DEEPGRAM_API_KEY
-from app.services.memory import get_chat_history  # Import the function to get chat history
 
 router = APIRouter()
 
-DEEPGRAM_TTS_URL = "https://api.deepgram.com/v1/speak"
-DEEPGRAM_STT_URL = "https://api.deepgram.com/v1/listen"
+# Deepgram client configuration
+deepgram = DeepgramClient(DEEPGRAM_API_KEY)
+dg_connection = deepgram.listen.asyncwebsocket.v("1")
 
-async def generate_full_tts_audio(text):
-    """
-    Generates full speech audio from Deepgram TTS API and returns binary data.
-    """
-    headers = {
-        "Authorization": f"Token {DEEPGRAM_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {"text": text}  # Ensure only `text` is sent
+options = LiveOptions(
+    model='nova-3',
+    punctuate=True,
+    interim_results=False,
+    language='en-Us',
+    smart_format=True
+)
 
-    async with httpx.AsyncClient() as client:
-        response = await client.post(DEEPGRAM_TTS_URL, headers=headers, json=payload)
-
-        if response.status_code != 200:
-            logging.error(f"❌ Deepgram TTS API Error: {response.text}")
-            return None
-        
-        audio_data = response.content  # Get binary audio response
-        if not audio_data:
-            logging.error("❌ Deepgram did not return audio data.")
-            return None
-
-        return audio_data  # Return full audio data
-    
-async def transcribe_audio(audio_data):
-    """
-    Sends audio to Deepgram STT API and returns transcribed text.
-    """
-    headers = {
-        "Authorization": f"Token {DEEPGRAM_API_KEY}",
-        "Content-Type": "audio/wav"
-    }
-
-    async with httpx.AsyncClient() as client:
-        response = await client.post(DEEPGRAM_STT_URL, headers=headers, content=audio_data)
-
-        if response.status_code != 200:
-            logging.error(f"❌ Deepgram STT API Error: {response.text}")
-            return None
-        
-        transcript = response.json().get("results", {}).get("channels", [{}])[0].get("alternatives", [{}])[0].get("transcript", "")
-        return transcript.strip() if transcript else None
+transcription_buffer = []
+last_speech_time = None
+silence_task = None
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    logging.info("📡 Client connected.")
-
+    global transcription_buffer, last_speech_time, silence_task
     try:
+        await websocket.accept()
+        logging.info("📡 Client connected.")
+
+        await dg_connection.start(options)
+        logging.info("Deepgram WebSocket connection started.")
+
+        async def on_message(self, result, **kwargs):
+            global transcription_buffer, last_speech_time, silence_task
+
+            sentence = result.channel.alternatives[0].transcript.strip()
+            if not sentence:
+                return  
+
+            logging.info(f"Partial Transcription: {sentence}")
+
+            last_speech_time = time.time()
+            transcription_buffer.append((sentence, last_speech_time))
+
+            # Remove speech older than 3 seconds
+            transcription_buffer = [(s, t) for s, t in transcription_buffer if time.time() - t <= 3]
+
+            final_text = " ".join([s for s, t in transcription_buffer])
+            
+            if silence_task:
+                silence_task.cancel()
+            silence_task = asyncio.create_task(silence_detected(websocket))
+
+        async def on_error(self, error, **kwargs):
+            logging.error(f"Error: {error}")
+
+        dg_connection.on(LiveTranscriptionEvents.Transcript, on_message)
+        dg_connection.on(LiveTranscriptionEvents.Error, on_error)
+
         while True:
             try:
-                user_query = await websocket.receive_text()
+                audio_data = await websocket.receive_bytes()
+                await dg_connection.send(audio_data) 
+
             except WebSocketDisconnect:
                 logging.info("🔌 Client disconnected.")
+                await dg_connection.finish()
                 break
             except Exception as e:
-                logging.error(f"❌ Error receiving message: {e}")
-                continue
-
-            user_query = user_query.strip()
-            if not user_query:
-                logging.warning("⚠️ Empty message received, ignoring.")
-                continue
-
-            logging.info(f"📩 Received query: {user_query}")
-
-            # Step 1: Fetch chat history
-            chat_history = get_chat_history()  # Get the chat history
-
-            # Step 2: Search Pinecone
-            retrieved_context = search_pinecone(user_query)
-
-            # Step 3: Check relevance
-            is_relevant = check_relevance(user_query, retrieved_context) if retrieved_context else False
-
-            # Step 4: Select data source
-            context_prompt = retrieved_context if is_relevant else None
-
-            # Step 5: Generate AI response (Text)
-            ai_reply = generate_response(user_query, context_prompt=retrieved_context, chat_history=chat_history)  # Pass chat history
-            logging.info(f"🎙️ AI Response: {ai_reply}")
-
-            # Send AI response text first
-            await websocket.send_text(ai_reply)
-
-            # Step 6: Generate full TTS audio
-            audio_data = await generate_full_tts_audio(ai_reply)
-            if audio_data:
-                await websocket.send_bytes(audio_data)  # Send full audio after generation
-                logging.info("✅ Sent full audio to frontend.")
+                logging.error(f"❌ Error receiving audio: {e}")
 
     except Exception as e:
-        logging.error(f"❌ Unexpected error in WebSocket: {e}")
-    finally:
-        await websocket.close()
-        logging.info("✅ WebSocket closed cleanly.")
+        logging.error(f"Failed to start Deepgram WebSocket connection: {e}")
+
+async def silence_detected(websocket):
+    global transcription_buffer
+
+    await asyncio.sleep(1.5)  # Wait 1.5 seconds to confirm silence
+
+    if transcription_buffer:
+        final_transcription = " ".join([s for s, t in transcription_buffer])
+        transcription_buffer = []  
+
+        logging.info(f"⏳ Silence detected. Sending final transcription: {final_transcription}")
+
+        await websocket.send_text(json.dumps({"type": "transcription", "text": final_transcription}))
+
+        # Delay before sending to AI to ensure frontend updates first
+        # await asyncio.sleep(0.1)  
+
+        ai_response = await process_transcription(final_transcription)
+        logging.info(f"🤖 AI Response: {ai_response}")
+        await websocket.send_text(json.dumps({"type": "ai_response", "text": ai_response}))
+        if ai_response:
+            await generate_full_tts_audio(ai_response, websocket)
+
+async def process_transcription(transcription: str):
+    # chat_history = get_chat_history()
+    retrieved_context = search_pinecone(transcription)
+    is_relevant = check_relevance(transcription, retrieved_context) if retrieved_context else False
+    context_prompt = retrieved_context if is_relevant else None
+    return generate_response(transcription, context_prompt)
