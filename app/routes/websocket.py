@@ -2,58 +2,21 @@ import logging
 import asyncio
 import httpx
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from app.services.ai import generate_response, check_relevance
-from app.services.pinecone import search_pinecone
 from app.config.settings import DEEPGRAM_API_KEY
-from app.services.memory import get_chat_history  # Import the function to get chat history
+from app.services.pinecone import search_pinecone
+from app.services.ai import generate_response, check_relevance
+from app.services.tts import generate_full_tts_audio
 
 router = APIRouter()
 
-DEEPGRAM_TTS_URL = "https://api.deepgram.com/v1/speak"
-DEEPGRAM_STT_URL = "https://api.deepgram.com/v1/listen"
-
-async def generate_full_tts_audio(text):
-    """
-    Generates full speech audio from Deepgram TTS API and returns binary data.
-    """
-    headers = {
-        "Authorization": f"Token {DEEPGRAM_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {"text": text}  # Ensure only `text` is sent
-
-    async with httpx.AsyncClient() as client:
-        response = await client.post(DEEPGRAM_TTS_URL, headers=headers, json=payload)
-
-        if response.status_code != 200:
-            logging.error(f"❌ Deepgram TTS API Error: {response.text}")
-            return None
-        
-        audio_data = response.content  # Get binary audio response
-        if not audio_data:
-            logging.error("❌ Deepgram did not return audio data.")
-            return None
-
-        return audio_data  # Return full audio data
-    
-async def transcribe_audio(audio_data):
-    """
-    Sends audio to Deepgram STT API and returns transcribed text.
-    """
-    headers = {
-        "Authorization": f"Token {DEEPGRAM_API_KEY}",
-        "Content-Type": "audio/wav"
-    }
-
-    async with httpx.AsyncClient() as client:
-        response = await client.post(DEEPGRAM_STT_URL, headers=headers, content=audio_data)
-
-        if response.status_code != 200:
-            logging.error(f"❌ Deepgram STT API Error: {response.text}")
-            return None
-        
-        transcript = response.json().get("results", {}).get("channels", [{}])[0].get("alternatives", [{}])[0].get("transcript", "")
-        return transcript.strip() if transcript else None
+# # Enable CORS for frontend access
+# router.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["*"],
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -78,8 +41,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
             logging.info(f"📩 Received query: {user_query}")
 
-            # Step 1: Fetch chat history
-            chat_history = get_chat_history()  # Get the chat history
+ 
 
             # Step 2: Search Pinecone
             retrieved_context = search_pinecone(user_query)
@@ -91,16 +53,11 @@ async def websocket_endpoint(websocket: WebSocket):
             context_prompt = retrieved_context if is_relevant else None
 
             # Step 5: Generate AI response (Text)
-            ai_reply = generate_response(user_query, context_prompt=retrieved_context, chat_history=chat_history)  # Pass chat history
-            logging.info(f"🎙️ AI Response: {ai_reply}")
+            ai_response = generate_response(user_query, context_prompt=retrieved_context)
 
-            # Send AI response text first
-            await websocket.send_text(ai_reply)
 
-            # Step 6: Generate full TTS audio
-            audio_data = await generate_full_tts_audio(ai_reply)
-            if audio_data:
-                await websocket.send_bytes(audio_data)  # Send full audio after generation
+            if ai_response:
+                await generate_full_tts_audio(ai_response, websocket)  
                 logging.info("✅ Sent full audio to frontend.")
 
     except Exception as e:

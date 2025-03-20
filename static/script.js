@@ -17,12 +17,12 @@ document.addEventListener("DOMContentLoaded", function () {
 
             ws.onmessage = async (event) => {
                 if (typeof event.data === "string") {
-                    addMessage("AI", event.data);
+                    addMessage("AI", event.data); 
                 } else if (event.data instanceof Blob) {
-                    playAudioStream(event.data);
+                    const arrayBuffer = await event.data.arrayBuffer();
+                    playAudioStream(arrayBuffer);
                 }
             };
-
             ws.onclose = () => {
                 console.warn("❌ WebSocket Disconnected. Reconnecting...");
                 setTimeout(connectWebSocket, 2000);
@@ -100,17 +100,21 @@ document.addEventListener("DOMContentLoaded", function () {
         chatBox.scrollTop = chatBox.scrollHeight;
     }
 
+    // Create a single AudioContext
+    let audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
     function playAudioStream(audioBlob) {
-        let audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        audioBlob.arrayBuffer().then((arrayBuffer) => {
-            audioContext.decodeAudioData(arrayBuffer, (audioBuffer) => {
+        audioBlob.arrayBuffer()
+            .then((arrayBuffer) => audioContext.decodeAudioData(arrayBuffer))
+            .then((audioBuffer) => {
                 let source = audioContext.createBufferSource();
                 source.buffer = audioBuffer;
                 source.connect(audioContext.destination);
                 source.start();
-            });
-        });
+            })
+            .catch((error) => console.error("Error decoding audio data:", error));
     }
+
 
     startSpeaking.addEventListener("click", startSpeechRecognition);
     endSpeaking.addEventListener("click", () => recognition && recognition.stop());
