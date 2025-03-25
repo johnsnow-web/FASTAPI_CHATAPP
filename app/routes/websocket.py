@@ -1,109 +1,117 @@
 import logging
-import asyncio
-import time
 import json
+import uuid
+from collections import defaultdict
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from deepgram import DeepgramClient, LiveTranscriptionEvents, LiveOptions
+from deepgram import DeepgramClient, DeepgramClientOptions, LiveTranscriptionEvents, LiveOptions
 from app.services.ai import generate_response, check_relevance
-# from app.services.memory import get_chat_history
 from app.services.pinecone import search_pinecone
 from app.services.tts import generate_full_tts_audio
 from app.config.settings import DEEPGRAM_API_KEY
 
 router = APIRouter()
 
-# Deepgram client configuration
-deepgram = DeepgramClient(DEEPGRAM_API_KEY)
-dg_connection = deepgram.listen.asyncwebsocket.v("1")
-
-options = LiveOptions(
-    model='nova-3',
-    punctuate=True,
-    interim_results=False,
-    language='en-Us',
-    smart_format=True
+config = DeepgramClientOptions(
+    options={"keepalive": "true"}
 )
 
-transcription_buffer = []
-last_speech_time = None
-silence_task = None
+# Deepgram client configuration
+deepgram = DeepgramClient(DEEPGRAM_API_KEY, config)
+dg_connection = deepgram.listen.asyncwebsocket.v("1")
+
+# Live transcription options with VAD and auto-endpointing
+options = LiveOptions(
+    model='nova-2',
+    punctuate=True,
+    interim_results=True,
+    language='en-US',
+    smart_format=True,
+    utterance_end_ms="1000",  # Marks end of utterance after 1s of silence
+    vad_events=True,  # Enables voice activity detection
+    endpointing=2000   # Stops transcribing after 2s of silence
+)
+
+# Dictionary to store transcription buffers for each client
+transcription_buffers = defaultdict(list)
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    global transcription_buffer, last_speech_time, silence_task
+    # Assign a unique ID to each client
+    socket_id = str(uuid.uuid4())
+
     try:
         await websocket.accept()
-        logging.info("📡 Client connected.")
+        logging.info(f"📡 Client connected: {socket_id}")
 
         await dg_connection.start(options)
-        logging.info("Deepgram WebSocket connection started.")
+        logging.info(f"Deepgram WebSocket started for {socket_id}")
 
         async def on_message(self, result, **kwargs):
-            global transcription_buffer, last_speech_time, silence_task
-
             sentence = result.channel.alternatives[0].transcript.strip()
             if not sentence:
                 return  
 
-            logging.info(f"Partial Transcription: {sentence}")
+            # logging.info(f"Partial Transcription [{socket_id}]: {sentence}")
 
-            last_speech_time = time.time()
-            transcription_buffer.append((sentence, last_speech_time))
+            # Append to this client's buffer
+            transcription_buffers[socket_id].append(sentence)
 
-            # Remove speech older than 3 seconds
-            transcription_buffer = [(s, t) for s, t in transcription_buffer if time.time() - t <= 3]
+            logging.info(f"Transcription Buffers [{socket_id}]: {transcription_buffers[socket_id]}")
 
-            final_text = " ".join([s for s, t in transcription_buffer])
-            
-            if silence_task:
-                silence_task.cancel()
-            silence_task = asyncio.create_task(silence_detected(websocket))
+            # If Deepgram detects speech has ended
+            if getattr(result.channel.alternatives[0], "is_final", True) or getattr(result.channel.alternatives[0], "speech_final", True):
+                final_transcription = " ".join(transcription_buffers[socket_id])
+
+                if final_transcription:  # Avoid sending empty transcriptions
+                    logging.info(f"📝 Final Transcription [{socket_id}]: {final_transcription}")
+
+                    await websocket.send_text(json.dumps({
+                        "socket_id": socket_id,
+                        "type": "transcription",
+                        "text": final_transcription
+                    }))
+
+                    transcription_buffers[socket_id] = []  # ✅ Clear only after processing
+
+                    ai_response = await process_transcription(final_transcription)
+                    logging.info(f"🤖 AI Response [{socket_id}]: {ai_response}")
+
+                    await websocket.send_text(json.dumps({
+                        "socket_id": socket_id,
+                        "type": "ai_response",
+                        "text": ai_response
+                    }))
+
+                    if ai_response:
+                        await generate_full_tts_audio(ai_response, websocket)
+
 
         async def on_error(self, error, **kwargs):
-            logging.error(f"Error: {error}")
+            logging.error(f"Error [{socket_id}]: {error}")
 
-        dg_connection.on(LiveTranscriptionEvents.Transcript, on_message)
-        dg_connection.on(LiveTranscriptionEvents.Error, on_error)
+        if not hasattr(dg_connection, "_event_attached"):
+            dg_connection.on(LiveTranscriptionEvents.Transcript, on_message)
+            dg_connection.on(LiveTranscriptionEvents.Error, on_error)
+            dg_connection._event_attached = True
+            
 
         while True:
             try:
                 audio_data = await websocket.receive_bytes()
-                await dg_connection.send(audio_data) 
+                await dg_connection.send(audio_data)
 
             except WebSocketDisconnect:
-                logging.info("🔌 Client disconnected.")
+                logging.info(f"🔌 Client disconnected: {socket_id}")
+                # transcription_buffers.pop(socket_id, None)  # Clean up buffer
                 await dg_connection.finish()
                 break
             except Exception as e:
-                logging.error(f"❌ Error receiving audio: {e}")
+                logging.error(f"❌ Error receiving audio [{socket_id}]: {e}")
 
     except Exception as e:
-        logging.error(f"Failed to start Deepgram WebSocket connection: {e}")
-
-async def silence_detected(websocket):
-    global transcription_buffer
-
-    await asyncio.sleep(1.5)  # Wait 1.5 seconds to confirm silence
-
-    if transcription_buffer:
-        final_transcription = " ".join([s for s, t in transcription_buffer])
-        transcription_buffer = []  
-
-        logging.info(f"⏳ Silence detected. Sending final transcription: {final_transcription}")
-
-        await websocket.send_text(json.dumps({"type": "transcription", "text": final_transcription}))
-
-        # Delay before sending to AI to ensure frontend updates first
-        # await asyncio.sleep(0.1)  
-
-        ai_response = await process_transcription(final_transcription)
-        logging.info(f"🤖 AI Response: {ai_response}")
-        await websocket.send_text(json.dumps({"type": "ai_response", "text": ai_response}))
-        if ai_response:
-            await generate_full_tts_audio(ai_response, websocket)
+        logging.error(f"Failed to start WebSocket for {socket_id}: {e}")
 
 async def process_transcription(transcription: str):
-    # chat_history = get_chat_history()
     retrieved_context = search_pinecone(transcription)
     is_relevant = check_relevance(transcription, retrieved_context) if retrieved_context else False
     context_prompt = retrieved_context if is_relevant else None

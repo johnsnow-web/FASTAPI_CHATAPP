@@ -7,6 +7,7 @@ document.addEventListener("DOMContentLoaded", function () {
     let mediaRecorder;
     let audioStream;
     let isTranscriptionStarted = false;
+    let socketId = null;
 
     function connectWebSocket() {
         if (!ws || ws.readyState === WebSocket.CLOSED) {
@@ -17,18 +18,25 @@ document.addEventListener("DOMContentLoaded", function () {
             ws.binaryType = 'arraybuffer';
 
             ws.onmessage = async (event) => {
-                if (typeof event.data === "string") {
-                    addMessage("AI", event.data);
-                } else if (event.data instanceof Blob) {
-                    const arrayBuffer = await event.data.arrayBuffer();
-                    playAudioStream(arrayBuffer);
+                try {
+                    if (typeof event.data === "string") {
+                        const messageData = JSON.parse(event.data);
+            
+                        if (messageData.type === "transcription") {
+                            addMessage("You", messageData.text);
+                        } else if (messageData.type === "ai_response") {
+                            addMessage("AI", messageData.text);
+                        }
+                    } else if (event.data instanceof ArrayBuffer) {
+                        // ✅ Ensure it's handled as raw audio
+                        playAudioStream(event.data);
+                    } else {
+                        console.warn("Unknown WebSocket message type received:", event.data);
+                    }
+                } catch (error) {
+                    console.error("❌ WebSocket message error:", error);
                 }
-            };
-
-            ws.onclose = () => {
-                console.warn("❌ WebSocket Disconnected. Reconnecting...");
-                setTimeout(connectWebSocket, 2000);
-            };
+            };            
 
             ws.onerror = (error) => console.error("❌ WebSocket Error:", error);
         }
@@ -53,7 +61,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 if (event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
                     event.data.arrayBuffer().then((buffer) => {
                         const uint8Array = new Uint8Array(buffer);
-                        ws.send(uint8Array);
+                        ws.send(uint8Array);  // Then send raw audio data
                     });
                 }
             };
@@ -85,18 +93,25 @@ document.addEventListener("DOMContentLoaded", function () {
      // Create a single AudioContext
      let audioContext = new (window.AudioContext || window.webkitAudioContext)();
 
-     function playAudioStream(audioBlob) {
-         audioBlob.arrayBuffer()
-             .then((arrayBuffer) => audioContext.decodeAudioData(arrayBuffer))
-             .then((audioBuffer) => {
-                 let source = audioContext.createBufferSource();
-                 source.buffer = audioBuffer;
-                 source.connect(audioContext.destination);
-                 source.start();
-             })
-             .catch((error) => console.error("Error decoding audio data:", error));
-     }
- 
+     async function playAudioStream(audioData) {
+        try {
+            let arrayBuffer;
+            if (audioData instanceof Blob) {
+                arrayBuffer = await audioData.arrayBuffer();
+            } else {
+                arrayBuffer = audioData; // It's already an ArrayBuffer
+            }
+    
+            let audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+            
+            let source = audioContext.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(audioContext.destination);
+            source.start();
+        } catch (error) {
+            console.error("🎵 Audio Playback Error:", error);
+        }
+    }    
  
      startSpeaking.addEventListener("click", startRecording);
      endSpeaking.addEventListener("click", stopRecording);
